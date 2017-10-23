@@ -1,0 +1,319 @@
+---
+title: "Reinforcement learning methods for the multi-armed bandit problem"
+author: "Ä¬¥D©¶ Eric Su"
+date: "2017/6/23"
+output: html_document
+---
+[Click here for other works of the author on RPubs](http://rpubs.com/prorichter)
+
+The multi-armed bandit problem is a hypothetical problem of a person choosing which slot machines to play in a casino. Each machine yields a reward generated through some unknown process when played. On each turn, the person must choose a machine to play based on information gathered previously. The objective of the problem is to maximize the sum of rewards earned through a sequence of decision. 
+
+The problem is interesting because it involves a fundamental trade-off between the gain from exploiting choices that had worked well previously vs exploring choices that might potentially be optimal, but appeared to be inferior because of randomness. This "exploration" / "exploitation" trade-off can be observed in many real world problems such as choosing which products to buy, advertisement selection, medical treatment selection or financial portfolio design.
+
+Below I will demonstrate two algorithms, upper confidence bounds (UCB) and Thompson sampling (or probability matching strategy, a more general term), that tries to solve the multi-armed bandit problem. I will compare their performance and strategy in three scenarios: standard rewards, standard but more volatile rewards, somewhat chaotic rewards.
+
+### Load packages
+```{r message=FALSE}
+library(ggplot2)
+library(reshape2)
+```
+
+### Distribution of bandits / actions having normally distributed rewards with small variance
+
+This data represents an standard, ideal situation: normally distributed rewards, well seperated from each other.
+```{r}
+mean_reward = c(5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 26)
+reward_dist = c(function(n) rnorm(n = n, mean = mean_reward[1], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[2], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[3], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[4], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[5], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[6], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[7], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[8], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[9], sd = 2.5),
+                function(n) rnorm(n = n, mean = mean_reward[10], sd = 2.5))
+                  
+#prepare simulation data
+dataset = matrix(nrow = 10000, ncol = 10)
+for(i in 1:10){
+    dataset[, i] = reward_dist[[i]](n = 10000)
+}
+colnames(dataset) <- 1:10
+dataset_p = melt(dataset)[, 2:3]
+colnames(dataset_p) <- c("Bandit", "Reward")
+dataset_p$Bandit = as.factor(dataset_p$Bandit)
+
+#plot the distributions of rewards from bandits
+ggplot(dataset_p, aes(x = Reward, col = Bandit, fill = Bandit)) +
+    geom_density(alpha = 0.3) +
+    labs(title = "Reward from different bandits")
+```
+
+
+### Upper confidence bound algorithm
+```{r}
+UCB <- function(N = 1000, reward_data){
+    d = ncol(reward_data)
+    bandit_selected = integer(0)
+    numbers_of_selections = integer(d)
+    sums_of_rewards = integer(d)
+    total_reward = 0
+    for (n in 1:N) {
+        max_upper_bound = 0
+            for (i in 1:d) {
+                if (numbers_of_selections[i] > 0){
+                    average_reward = sums_of_rewards[i] / numbers_of_selections[i]
+                    delta_i = sqrt(2 * log(1 + n * log(n)^2) / numbers_of_selections[i])
+                    upper_bound = average_reward + delta_i
+                } else {
+                    upper_bound = 1e400
+                }
+                if (upper_bound > max_upper_bound){
+                    max_upper_bound = upper_bound
+                    bandit = i
+                }
+            }
+    bandit_selected = append(bandit_selected, bandit)
+    numbers_of_selections[bandit] = numbers_of_selections[bandit] + 1
+    reward = reward_data[n, bandit]
+    sums_of_rewards[bandit] = sums_of_rewards[bandit] + reward
+    total_reward = total_reward + reward
+    }
+    return(list(total_reward = total_reward, bandit_selected = bandit_selected, numbers_of_selections = numbers_of_selections, sums_of_rewards = sums_of_rewards))
+}
+```
+
+### Conduct UCB algorithm on our hypothesized bandits with normal distributions
+```{r}
+UCB(N = 1000, reward_data = dataset)
+```
+
+### Thompson sampling algorithm
+```{r}
+rnormgamma <- function(n, mu, lambda, alpha, beta){
+    if(length(n) > 1) 
+    n <- length(n)
+    tau <- rgamma(n, alpha, beta)
+    x <- rnorm(n, mu, 1 / (lambda * tau))
+    data.frame(tau = tau, x = x)
+}
+
+T.samp <- function(N = 500, reward_data, mu0 = 0, v = 1, alpha = 2, beta = 6){
+    d = ncol(reward_data)
+    bandit_selected = integer(0)
+    numbers_of_selections = integer(d)
+    sums_of_rewards = integer(d)
+    total_reward = 0
+    reward_history = vector("list", d)
+    for (n in 1:N){
+        max_random = -1e400
+        for (i in 1:d){
+            if(numbers_of_selections[i] >= 1){
+                rand = rnormgamma(1, 
+                              (v * mu0 + numbers_of_selections[i] * mean(reward_history[[i]])) / (v + numbers_of_selections[i]), 
+                              v + numbers_of_selections[i], 
+                              alpha + numbers_of_selections[i] / 2, 
+                              beta + (sum(reward_history[[i]] - mean(reward_history[[i]])) ^ 2) / 2 + ((numbers_of_selections[i] * v) / (v + numbers_of_selections[i])) * (mean(reward_history[[i]]) - mu0) ^ 2 / 2)$x
+            }else {
+                rand = rnormgamma(1, mu0, v, alpha, beta)$x
+            }
+            if(rand > max_random){
+                max_random = rand
+                bandit = i
+            }
+        }
+        bandit_selected = append(bandit_selected, bandit)
+        numbers_of_selections[bandit] = numbers_of_selections[bandit] + 1
+        reward = reward_data[n, bandit]
+        sums_of_rewards[bandit] = sums_of_rewards[bandit] + reward
+        total_reward = total_reward + reward
+        reward_history[[bandit]] = append(reward_history[[bandit]], reward)
+    }
+     return(list(total_reward = total_reward, bandit_selected = bandit_selected, numbers_of_selections = numbers_of_selections, sums_of_rewards = sums_of_rewards))
+}
+```
+
+### Conduct Thompson sampling using Normal-Gamma prior and Normal likelihood to estimate posterior distributions
+```{r}
+T.samp(N = 1000, reward_data = dataset, mu0 = 40)
+```
+
+We can see that the UCB algorithm quickly found out that the $10_{th}$ bandit yields most reward. On the other hand, Thompson sampling tried the worse bandits more times before finding the best one.
+
+### Distribution of bandits / actions having normally distributed rewards with large variance
+
+This data represents an ideal but more unstable situation: normally distributed rewards with much larger variance, thus not well seperated from each other.
+```{r}
+mean_reward = c(5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 26)
+reward_dist = c(function(n) rnorm(n = n, mean = mean_reward[1], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[2], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[3], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[4], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[5], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[6], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[7], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[8], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[9], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[10], sd = 20))
+                  
+#prepare simulation data
+dataset = matrix(nrow = 10000, ncol = 10)
+for(i in 1:10){
+    dataset[, i] = reward_dist[[i]](n = 10000)
+}
+colnames(dataset) <- 1:10
+dataset_p = melt(dataset)[, 2:3]
+colnames(dataset_p) <- c("Bandit", "Reward")
+dataset_p$Bandit = as.factor(dataset_p$Bandit)
+
+#plot the distributions of rewards from bandits
+ggplot(dataset_p, aes(x = Reward, col = Bandit, fill = Bandit)) +
+    geom_density(alpha = 0.3) +
+    labs(title = "Reward from different bandits")
+```
+
+### Conduct UCB on rewards with higher variance
+```{r}
+UCB(N = 1000, reward_data = dataset)
+```
+
+### Conduct Thompson sampling on rewards with higher variance
+```{r}
+T.samp(N = 1000, reward_data = dataset, mu0 = 40)
+```
+
+When the fluctuation of rewards are greater, the UCB algorithm is more susceptible to being "stuck" at a suboptimal choice and never finds the optimal bandit. Thompson sampling is generally more robust and would be able to find the optimal bandit in all kinds of situations.
+
+### Distribution of bandits / actions with rewards of different distributions
+
+This data represents an more chaotic (possibly more realistic) situation: rewards with different distribution and different variance.
+```{r}
+mean_reward = c(5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 26)
+reward_dist = c(function(n) rnorm(n = n, mean = mean_reward[1], sd = 20),
+                function(n) rgamma(n = n, shape = mean_reward[2] / 2, rate = 0.5),
+                function(n) rpois(n = n, lambda = mean_reward[3]),
+                function(n) runif(n = n, min = mean_reward[4] - 20, max = mean_reward[4] + 20),
+                function(n) rlnorm(n = n, meanlog = log(mean_reward[5]) - 0.25, sdlog = 0.5),
+                function(n) rnorm(n = n, mean = mean_reward[6], sd = 20),
+                function(n) rexp(n = n, rate = 1 / mean_reward[7]),
+                function(n) rbinom(n = n, size = mean_reward[8] / 0.5, prob = 0.5),
+                function(n) rnorm(n = n, mean = mean_reward[9], sd = 20),
+                function(n) rnorm(n = n, mean = mean_reward[10], sd = 20))
+                  
+#prepare simulation data
+dataset = matrix(nrow = 10000, ncol = 10)
+for(i in 1:10){
+    dataset[, i] = reward_dist[[i]](n = 10000)
+}
+colnames(dataset) <- 1:10
+dataset_p = melt(dataset)[, 2:3]
+colnames(dataset_p) <- c("Bandit", "Reward")
+dataset_p$Bandit = as.factor(dataset_p$Bandit)
+
+#plot the distributions of rewards from bandits
+ggplot(dataset_p, aes(x = Reward, col = Bandit, fill = Bandit)) +
+    geom_density(alpha = 0.3) +
+    labs(title = "Reward from different bandits")
+```
+
+### Conduct UCB on rewards with different distributions
+```{r}
+UCB(N = 1000, reward_data = dataset)
+```
+
+### Conduct Thompson sampling on rewards with different distributions
+```{r}
+T.samp(N = 1000, reward_data = dataset, mu0 = 40)
+```
+
+The performance of the two algorithm are similar to what we've observed in the previous condition.
+
+A major reason why the Thompson sampling algorithm tries all bandits several times before choosing the one it considers best is because I chose a prior distribution with a relatively high mean. With a prior having a larger mean, the algorithm favors "exploration" over "exploitation" at the beginning and only when it is very confident that it has found the best choice that it valued "exploitation" over "exploration". If we decrease the mean of prior, "exploitation" would have a higher value and the algorithm would stop exploring faster. by chaning the prior distribution used, one can adjust the relative importance of "exploration" over "exploitation" to suit specific problems on hand. This a another testament to how flexible the Thompson sampling algorithm is.
+
+## Appendix
+
+From the demonstrations above, we have seen how Thompson sampling can be more robust than methods based on optimal, standard situations such as UCB. However, using the approach we've implemented, one must use conjugate priors of the likelihood in order to update posterior distributions in a straight forward way. What if approapriate conjugate priors do not exist or one wish to construct hierarchecal models which include other variables that might affect rewards gained? In such cases, posterior distributions of the reward cannot be estimated by the usual way. Luckily, researches have developed more flexible methods for estimating the posterior. In this appendix, I will show one of the most powerful and commonly used technique, Markoc chain Monte Carlo (MCMC).
+
+Markoc chain Monte Carlo algorithms attempt to "sample" from posterior distribution by constructing a Markov chain. With sufficient samples and applying other control measures (ex. thinning & burn in), these samples drawn from the Markov chain will approximate the posterior. This type of algorithms are able to sample from joint distributions in all kinds of models with great flexibility and accuracy.
+
+As good as it sounds, MCMC algorithms have a major drawback, which is its slow speed relative to other methods. This being said, the flexibility and robustness MCMC algorithms offer are still rarely matched by other algorithms. My personal advice would be to use other methods when the problem at hand is relatively standard and use MCMC when one wish to build sophisticated models that include other explanatory variables.
+
+### MCMC algorithm using OpenBUGS
+We use the same model as we've introduced before: a normal-gamma prior with a normal likelihood.
+
+MCMC can be conducted in many different ways. I will give example codes using OpenBUGS, a software designed to perform Gibbs sampling (one type of MCMC). The package `R2OpenBUGS` allows us to call OpenBUGS from R. 
+```{r eval=FALSE}
+#load package R2OpenBUGS
+library(R2OpenBUGS)
+
+#self-defined function that returns samples from the posterior
+MCMC <- function(reward, n.iter = 1000, n.chains = 1, n.burnin = 100, n.thin = 10, ...){
+    n = length(reward)
+    est_mu = mean(reward)
+    if(n == 1){
+        return(rnorm(n.iter - n.burnin, est_mu, 100))
+    }
+    my.data <- list("reward", "n", "est_mu")
+    model = function(){
+        for(i in 1:n){
+            reward[i] ~ dnorm(mu, tau)
+        }
+        mu ~ dnorm(est_mu, 0.001)
+        tau ~ dgamma(0.001, 0.001)
+    }
+    my.model.file <- "model_bandit.odc" 
+    write.model(model, con = my.model.file)
+    
+    params <- c("mu")
+    
+    inits <- function(){
+        list(mu = 5, tau = 1)
+    }
+    out <- bugs(data = my.data, inits = inits, parameters.to.save = params, model.file = my.model.file, codaPkg = T, n.iter = n.iter, n.chains = n.chains, n.burnin = n.burnin, n.thin = n.thin, save.history = F, ...)
+    bugs_out <- read.bugs(out, quiet = T)
+    return(bugs_out[[1]][, 2])
+}
+```
+
+### Thompson sampling algorithm using MCMC
+Same function as `T.samp` function above but estimates posterior distribution of mean reward using MCMC.
+```{r eval=FALSE}
+T.samp.mcmc <- function(N = 500, reward_data, mcmc.iter = 1000, mcmc.burnin = 100, show.iter = FALSE, ...){
+    d = ncol(reward_data)
+    bandit_selected = integer(0)
+    numbers_of_selections = integer(d)
+    sums_of_rewards = integer(d)
+    total_reward = 0
+    posterior_dist = matrix(9999, nrow = mcmc.iter - mcmc.burnin, ncol = d, n.mcmc = )
+    reward_history = vector("list", d)
+    for (n in 1:N){
+        max_random = 0
+        for (i in 1:d){
+            rand = sample(posterior_dist[, i], 1)
+            if(rand > max_random){
+                max_random = rand
+                bandit = i
+            }
+        }
+        bandit_selected = append(bandit_selected, bandit)
+        numbers_of_selections[bandit] = numbers_of_selections[bandit] + 1
+        reward = reward_data[n, bandit]
+        sums_of_rewards[bandit] = sums_of_rewards[bandit] + reward
+        total_reward = total_reward + reward
+        reward_history[[bandit]] = append(reward_history[[bandit]], reward)
+        posterior_dist[, bandit] = as.vector(MCMC(reward = reward_history[[bandit]], n.iter = mcmc.iter, n.burnin = mcmc.burnin, ...))
+        
+        if(show.iter == TRUE)
+        cat()
+    }
+    return(list(total_reward = total_reward, bandit_selected = bandit_selected, numbers_of_selections = numbers_of_selections, sums_of_rewards = sums_of_rewards))
+}
+```
+
+### Conduct Thompson sampling using MCMC to estimate posterior distributions
+```{r eval=FALSE}
+T.samp.mcmc(N = 200, reward_data = dataset)
+```
+
+P.S. Codes using MCMC are not runned due to its slow speed, you are welcome to try it yourself. 
